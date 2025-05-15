@@ -1,9 +1,9 @@
-# spinal-organ-api-otis
-Simple BOS-Droople api connector to register telemetry data
+# spinal-organ-api-alcea
+Simple BOS-Alcea api connector to aggregate access and alarm data
 
 ## Getting Started
 
-These instructions will guide you on how to install and make use of the spinal-organ-api-droople.
+These instructions will guide you on how to install and make use of the spinal-organ-api-alcea.
 
 ### Prerequisites
 
@@ -17,11 +17,11 @@ SPINALHUB_PROTOCOL=                         # The protocol for connecting to the
 SPINALHUB_PORT=                             # The port for connecting to the spinalhub
 DIGITALTWIN_PATH=                           # The path of the digital twin in the spinalhub
 SPINAL_ORGAN_NAME=                          # The name of the organ
-SPINAL_CONFIG_PATH=                         # The path of the config file in the spinalhub exemple : /etc/Organs/otis
+SPINAL_CONFIG_PATH=                         # The path of the config file in the spinalhub exemple : /etc/Organs/alcea
 
 NETWORK_CONTEXT_NAME=                       # The name of the network context to be created
 VIRTUAL_NETWORK_NAME=                       # The name of the virtual network to be created
-API_KEY=                                    # The API key for the Droople API
+API_KEY=                                    # The API key for the ALCEA API
 PULL_INTERVAL=                              # Time (in ms) between each update of data
 
 
@@ -52,6 +52,6 @@ npm run start
 
 Or using [pm2](https://pm2.keymetrics.io/docs/usage/quick-start/)
 ```bash
-pm2 start index.js --name organ-droople
+pm2 start index.js --name organ-alcea
 ```
 ```
