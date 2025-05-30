@@ -83,7 +83,7 @@ export interface LogAccessApiParsedResponse extends Omit<LogAccessApiResponse, '
 
 export async function getAccessLogs(): Promise<LogAccessApiParsedResponse> {
   const res = await axiosInstance.get<LogAccessApiResponse>(
-    `/AlwinService/AlwinServices.svc/web/getlogaccess?format=json&pageNumber=1&pageSize=60&sortByExpression=datetime1 desc`
+    `/AlwinService/AlwinServices.svc/web/getlogaccess?format=json&pageNumber=1&pageSize=100&sortByExpression=datetime1 desc`
   );
 
   const parsedContainer = res.data.CollectionsContainer.map(group =>

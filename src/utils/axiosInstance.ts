@@ -32,14 +32,15 @@ function newInstance(baseURL: string) {
   if (axiosInstance) {
     detachInstance();
   }
-  const base64Credentials = Buffer.from(`${process.env.USERNAME}:${process.env.PASSWORD}`).toString('base64');
+  const base64Credentials = btoa(
+    `${process.env.API_USERNAME}:${process.env.API_PASSWORD}`)
   axiosInstance = axios.create({
     baseURL,
     method: 'get',
     headers: { 
       'Content-Type': 'application/json',
       'X-API-KEY': process.env.API_KEY,
-      'Authorization': 'Basic ' + base64Credentials, 
+      'Authorization': `Basic ${base64Credentials}` , 
     }
   });
   manager = ConcurrencyManager(axiosInstance, MAX_CONCURRENT_REQUESTS);

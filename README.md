@@ -21,8 +21,12 @@ SPINAL_CONFIG_PATH=                         # The path of the config file in the
 
 NETWORK_CONTEXT_NAME=                       # The name of the network context to be created
 VIRTUAL_NETWORK_NAME=                       # The name of the virtual network to be created
-API_KEY=                                    # The API key for the ALCEA API
 PULL_INTERVAL=                              # Time (in ms) between each update of data
+API_KEY=                                    # The API key for the ALCEA API
+API_USERNAME=                               # The username for the ALCEA API
+API_PASSWORD=                               # The password for the ALCEA API
+API_SERVER_BASE_URL=                        # The base URL for the ALCEA API
+
 
 
 ```
@@ -33,7 +37,7 @@ PULL_INTERVAL=                              # Time (in ms) between each update o
 Clone this repository in the directory of your choice. Navigate to the cloned directory and install the dependencies using the following command:
     
 ```bash
-npm install
+spinalcom-utils i
 ```
 
 To build the module, run:

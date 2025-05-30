@@ -38,7 +38,14 @@ import {
   LogAccessApiResponse,
   AlceaLogAccessParsed,
   getAccessLogs,
-} from '../../../services/client/DIConsulte';
+} from '../../../services/client/accessLog';
+
+import {
+  AlceaLogAlarm,
+  LogAlarmApiResponse,
+  AlceaLogAlarmParsed,
+  getAlarmLogs,
+} from '../../../services/client/alarmLog';
 import { attributeService } from 'spinal-env-viewer-plugin-documentation-service';
 import { NetworkService, SpinalBmsEndpoint } from 'spinal-model-bmsnetwork';
 import {
@@ -49,10 +56,12 @@ import {
   InputDataEndpointType,
 } from '../../../model/InputData/InputDataModel/InputDataModel';
 import { SpinalServiceTimeseries } from 'spinal-model-timeseries';
-import { spinalServiceTicket } from 'spinal-service-ticket';
+import { serviceTicketPersonalized, spinalServiceTicket } from 'spinal-service-ticket';
 import axios, { AxiosError } from 'axios';
+import { spinalOccupantService } from 'spinal-model-occupant';
+import { spinalOrganizationService } from 'spinal-model-organization';
 /**
- * Main purpose of this class is to pull tickets from client.
+ * Main purpose of this class is to handle both alarms and access logs from client.
  *
  * @export
  * @class SyncRunPull
@@ -66,7 +75,14 @@ export class SyncRunPull {
   networkContext: SpinalNode<any>;
   virtualNetworkContext: SpinalNode<any>;
   timeseriesService: SpinalServiceTimeseries;
-  mappingElevators: Map<string, string>;
+  occupantContext: SpinalNode<any>;
+  organizationContext: SpinalNode<any>;
+  ticketContext: SpinalNode<any>;
+  ticketProcess: SpinalNode<any>;
+  equipmentGroup: SpinalNode<any>;
+  mappingCodeToEquipment: Map<string, SpinalNode<any>>;
+  buildingNode: SpinalNode<any>;
+
 
   constructor(
     graph: SpinalGraph<any>,
@@ -126,6 +142,96 @@ export class SyncRunPull {
     return virtualNetworks.find((network) => {
       return network.getName().get() === process.env.VIRTUAL_NETWORK_NAME;
     });
+  }
+
+  async initEquipmentGroup(): Promise<void> {
+    const contexts = await this.graph.getChildren();
+
+    const context = contexts.find(
+      (context) =>
+        context.getName().get() === process.env.EQUIPMENT_CONTEXT_NAME
+    );
+    if (!context) {
+      throw new Error('Equipment Context Not Found');
+    }
+
+    const categories = await context.getChildren('hasCategory');
+    const category = categories.find((cat) => {
+      return cat.getName().get() === process.env.EQUIPMENT_CATEGORY_NAME;
+    });
+    if (!category) {
+      throw new Error('Equipment Category Not Found');
+    }
+    const equipmentGroups = await category.getChildren('hasGroup');
+    const equipmentGroup = equipmentGroups.find((group) => {
+      return group.getName().get() === process.env.EQUIPMENT_GROUP_NAME;
+    });
+    if (!equipmentGroup) {
+      throw new Error('Equipment Group Not Found');
+    }
+
+    SpinalGraphService._addNode(equipmentGroup);
+    this.equipmentGroup = equipmentGroup;
+
+    this.mappingCodeToEquipment = new Map<string, SpinalNode<any>>();
+    const equipmentNodes = await this.equipmentGroup.getChildren(
+      'groupHasBIMObject'
+    );
+    for (const equipmentNode of equipmentNodes) {
+      SpinalGraphService._addNode(equipmentNode);
+      try {
+        const attributes = await attributeService.getAttributesByCategory(
+          equipmentNode,
+          process.env.EQUIPMENT_ATTRIBUTE_CATEGORY_NAME,
+          process.env.EQUIPMENT_ATTRIBUTE_NAME
+        );
+
+        if (!attributes || attributes.length != 1) {
+          console.warn(
+            `Equipment Node ${equipmentNode
+              .getName()
+              .get()} anomaly found with attribute fetching`
+          );
+          continue;
+        }
+
+        const code = String(attributes[0].value.get());
+        this.mappingCodeToEquipment.set(code, equipmentNode);
+      } catch (error) {
+        console.warn(
+          `Error fetching attributes for Equipment Node ${equipmentNode
+            .getName()
+            .get()}`
+        );
+      }
+    }
+
+    console.log(
+      'Equipment Group initialized with',
+      this.mappingCodeToEquipment.size,
+      'equipment nodes'
+    );
+    // from this point, you can use this.equipmentGroup to access the equipment group node
+  }
+
+  async initBuildingNode(): Promise<void> {
+    const contexts = await this.graph.getChildren();
+    const context = contexts.find(
+      (context) => context.getName().get() === "spatial"
+    );
+    if (!context) {
+      throw new Error('Building Context Not Found');
+    }
+    const buildings = await context.getChildren('hasGeographicBuilding');
+    const buildingNode = buildings.find((building) => {
+      return building.getName().get() === process.env.SPATIAL_BUILDING_NAME;
+    });
+    if (!buildingNode) {
+      throw new Error('Building Node Not Found');
+    }
+    SpinalGraphService._addNode(buildingNode);
+    this.buildingNode = buildingNode;
+    console.log('Building Node initialized:', buildingNode.getName().get());
   }
 
   async initNetworkNodes(): Promise<void> {
@@ -297,8 +403,9 @@ export class SyncRunPull {
     return device;
   }
 
-  async updateAccessLogsData(logAccessDatas: AlceaLogAccessParsed[]) {
+  async updateFromAccessLogsData(logAccessDatas: AlceaLogAccessParsed[]) {
     for (const logAccess of logAccessDatas) {
+      if (!logAccess.CompanyName) logAccess.CompanyName = 'Unknown';
       let deviceNodes: SpinalNode<any>[] =
         await this.virtualNetworkContext.getChildren('hasBmsDevice');
       // console.log('Log Access : ', logAccess.PointName);
@@ -311,6 +418,18 @@ export class SyncRunPull {
         await this.createEndpoint(deviceNode.getId().get(), 'In');
         await this.createEndpoint(deviceNode.getId().get(), 'Out');
         await this.addAttributesToDevice(deviceNode, logAccess);
+
+        // link device to equipment 
+        const code = this.extractCode(logAccess.PointName);
+        if(code) {  // link device to equipment 
+          const equipmentNode = this.mappingCodeToEquipment.get(code);
+          if (equipmentNode) {
+            await equipmentNode.addChild(deviceNode, 'hasBmsDevice', SPINAL_RELATION_PTR_LST_TYPE);
+            console.log(
+              `Linked device ${logAccess.PointName} to equipment ${equipmentNode.getName().get()}`
+            );
+          }
+        }
       }
 
       SpinalGraphService._addNode(deviceNode);
@@ -349,17 +468,14 @@ export class SyncRunPull {
           logAccess.parsedDateTime1
         );
         console.log(
-          'Incremented Out value from ', currentValueOut,
-          'to', currentValueOut + 1,
+          'Incremented Out value from ',
+          currentValueOut,
+          'to',
+          currentValueOut + 1,
           'for device',
           logAccess.PointName
         );
       } else if (logAccess.AlarmCodeMessage == 'Badge accepté') {
-        // increment In
-        // await this.nwService.setEndpointValue(
-        //   endpointNodeIn.info.id.get(),
-        //   currentValueIn + 1
-        // );
         inElement.currentValue.set(currentValueIn + 1);
         await this.timeseriesService.insertFromEndpoint(
           endpointNodeIn.info.id.get(),
@@ -367,10 +483,94 @@ export class SyncRunPull {
           logAccess.parsedDateTime1
         );
         console.log(
-          'Incremented In value from ', currentValueIn,
-          'to', currentValueIn + 1,
+          'Incremented In value from ',
+          currentValueIn,
+          'to',
+          currentValueIn + 1,
           'for device',
           logAccess.PointName
+        );
+      }
+    }
+  }
+
+  async updateOccupantDataFromAccessLogs(
+    logAccessDatas: AlceaLogAccessParsed[]
+  ) {
+    const occupantNodes = await spinalOccupantService.getOccupants(
+      this.occupantContext.getName().get()
+    );
+    const occupantList = occupantNodes.map((occupant) =>
+      occupant.getName().get()
+    );
+
+    for (const logAccess of logAccessDatas) {
+      if (logAccess.AlarmCodeMessage !== 'Badge accepté') continue;
+      if (!occupantList.includes(logAccess.IdentifierInfo)) {
+        await spinalOccupantService.addOccupant(
+          {
+            first_name: logAccess.FirstName,
+            last_name: logAccess.LastName,
+            occupantId: logAccess.IdentifierInfo,
+            email: '',
+            serviceName: logAccess.ServiceName,
+            companyName: logAccess.CompanyName,
+            phoneNumber: '',
+          },
+          this.occupantContext.getName().get()
+        );
+        occupantList.push(logAccess.IdentifierInfo);
+      }
+    }
+  }
+
+  async updateOrganizationDataFromAccessLogs(
+    logAccessDatas: AlceaLogAccessParsed[]
+  ) {
+    for (const logAccess of logAccessDatas) {
+      const organizationNodes =
+        await spinalOrganizationService.getOrganizations(
+          this.organizationContext.getName().get()
+        );
+      if (logAccess.AlarmCodeMessage !== 'Badge accepté') continue;
+      if (!logAccess.CompanyName) logAccess.CompanyName = 'Unknown';
+
+      let organizationNode = organizationNodes.find(
+        (org) => org.getName().get() === logAccess.CompanyName
+      );
+
+      if (!organizationNode) {
+        organizationNode =
+          await spinalOrganizationService.addOrganizationToContext(
+            {
+              organizationName: logAccess.CompanyName,
+              organizationId: logAccess.CompanyName,
+            },
+            this.organizationContext.getName().get()
+          );
+      }
+
+      const occupantNodes =
+        await spinalOrganizationService.getOrganizationOccupants(
+          organizationNode
+        );
+      const linkedOccupantNode = occupantNodes.find((occupantNode) => {
+        return occupantNode.getName().get() === logAccess.IdentifierInfo;
+      });
+
+      if (!linkedOccupantNode) {
+        //récupérer la node occupant
+        const occupantNode = await spinalOccupantService.getOccupant(
+          this.occupantContext.getName().get(),
+          logAccess.IdentifierInfo
+        );
+        await spinalOrganizationService.addOccupantToOrganization(
+          occupantNode,
+          organizationNode,
+          this.organizationContext
+        );
+        console.log(
+          `Added occupant ${logAccess.IdentifierInfo} to organization ${logAccess.CompanyName}`
         );
       }
     }
@@ -380,32 +580,165 @@ export class SyncRunPull {
     console.log('Getting asset information...');
     const startTime = Date.now();
     const accessLogs = await getAccessLogs();
-    // console.log('Most Recent Log :', accessLogs.CollectionsContainer[0][0]);
+    console.log(
+      'Most Recent Log :',
+      accessLogs.CollectionsContainer[0][0].parsedDateTime1
+    );
     const fetchTime = (Date.now() - startTime) / 1000;
     console.log(`Access logs received in ${fetchTime} seconds`);
 
     const lastSyncTime = this.config.lastSync.get(); // epoch millis
 
-
     // Filter out previously synced logs
-    const newLogs = accessLogs.CollectionsContainer[0].filter((log) => {
-      return (
-        log.parsedDateTime1 && log.parsedDateTime1.getTime() > lastSyncTime
+    const newLogs = accessLogs.CollectionsContainer[0]
+      .filter((log) => {
+        const logMoment = moment(log.parsedDateTime1.getTime());
+        const today = moment();
+        //if(logMoment.isSame(today, 'day')) console.log('Log Date :', logMoment.format('YYYY-MM-DD HH:mm:ss'));
 
-      );
-    }).reverse();
+        return (
+          log.parsedDateTime1 &&
+          log.parsedDateTime1.getTime() > lastSyncTime &&
+          logMoment.isSame(today, 'day')
+        );
+      })
+      .reverse();
+
     console.log(
       `After filter : Kept ${newLogs.length} logs out of ${accessLogs.CollectionsContainer[0].length} total`
     );
 
+    this.updateOccupantDataFromAccessLogs(newLogs);
+    this.updateOrganizationDataFromAccessLogs(newLogs);
+
     console.log('Updating data ...');
     const updateStartTime = Date.now();
-    await this.updateAccessLogsData(newLogs); // Update to use newLogs
+    await this.updateFromAccessLogsData(newLogs); // Update to use newLogs
     const updateTime = (Date.now() - updateStartTime) / 1000;
     console.log(`Access logs data updated in ${updateTime} seconds`);
   }
 
-  async resetEndpointValuesIfNeeded() {
+  extractCode(input: string): string | null {
+    const match = input.match(/LB[ES]_N°\d+/);
+    if (match) {
+      const code = match[0].replace('LBS', 'LBE').replace('_', ' ');
+      return code;
+    }
+    return null;
+  }
+
+  async pullAndUpdateAlarms(): Promise<void> {
+    const alarmLogs = await getAlarmLogs();
+    console.log(
+      'Most Recent Alarm Log :',
+      alarmLogs.CollectionsContainer[0][0].parsedDateTime1
+    );
+    const lastSyncTime = this.config.lastSync.get(); // epoch millis
+    // Filter out previously synced logs
+    const newAlarmLogs = alarmLogs.CollectionsContainer[0]
+      .filter((log) => {
+        return (
+          log.parsedDateTime1 &&
+          log.parsedDateTime1.getTime() > lastSyncTime &&
+          log.AlarmCodeMessage !== "Changement d'état normal" &&
+          log.AlarmCodeMessage !== "Changement d'état alarme"
+        );
+      })
+      .reverse();
+
+    console.log(
+      `After filter : Kept ${newAlarmLogs.length} alarm logs out of ${alarmLogs.CollectionsContainer[0].length} total`
+    );
+
+    for (const logAlarm of newAlarmLogs) {
+      const code = this.extractCode(logAlarm.PointName); //  LBS_N° is also converted to LBE_N°,
+      if(!code) { // The log does not have LBE_N° or LBS_N°
+        console.warn(
+          `No code found in PointName: ${logAlarm.PointName}. Skipping alarm log.`
+        );
+        continue;
+      }
+
+      const ticketInfo = {
+        name : logAlarm.AlarmCodeMessage,
+        date: logAlarm.parsedDateTime1,
+        clientName: 'alcea',
+        AlarmID: logAlarm.AlarmID,
+        AlarmCode: logAlarm.AlarmCode,
+
+      }
+
+      const equipmentNode = this.mappingCodeToEquipment.get(code);
+      if (!equipmentNode) { // We don't have any equipment that match the LBE_N°
+        // in this case, we link to building node
+        console.warn(
+          `Equipment node not found for code: ${code}. Linking to building node.`
+        );
+        if (!this.buildingNode) {
+          console.error('Building node not initialized. Cannot link ticket.');
+          continue;
+        }
+        await serviceTicketPersonalized.addTicket(ticketInfo, this.ticketProcess.getId().get(),
+          this.ticketContext.getId().get(), this.buildingNode.getId().get());
+      }
+      else {
+        await serviceTicketPersonalized.addTicket(ticketInfo, this.ticketProcess.getId().get(),
+          this.ticketContext.getId().get(), equipmentNode.getId().get());
+      }
+      
+    }
+    console.log('Alarm tickets processed successfully.');
+  }
+
+
+
+  async calculateOccupants(): Promise<void> {
+    //In this function, we try to calculate the number of occupants in the building in different ways
+    // 1-  Add and substract every in and out of every device
+    // 2-  Count the number of badges scanned daily
+
+    // 1 :
+    const deviceNodes: SpinalNode<any>[] =
+      await this.virtualNetworkContext.getChildren('hasBmsDevice');
+    let totalOccupants = 0;
+    for (const deviceNode of deviceNodes) {
+      const endpoints = await deviceNode.getChildren('hasBmsEndpoint');
+      const inEndpoint = endpoints.find(
+        (endpoint) => endpoint.getName().get() === 'In'
+      );
+      const outEndpoint = endpoints.find(
+        (endpoint) => endpoint.getName().get() === 'Out'
+      );
+      if (!inEndpoint || !outEndpoint) {
+        console.error(
+          'In or Out endpoint not found for device',
+          deviceNode.getName().get()
+        );
+        continue;
+      }
+      const inElement = await inEndpoint.element.load();
+      const outElement = await outEndpoint.element.load();
+      totalOccupants +=
+        inElement.currentValue.get() - outElement.currentValue.get();
+    }
+
+    console.log(
+      'Total occupants calculated from In/Out endpoints:',
+      totalOccupants
+    );
+    // 2 :
+    const occupantNodes = await spinalOccupantService.getOccupants(
+      this.occupantContext.getName().get()
+    );
+    const totalOccupantsFromBadges = occupantNodes.length;
+
+    console.log(
+      'Total occupants calculated from badges:',
+      totalOccupantsFromBadges
+    );
+  }
+
+  async resetIfNeeded(): Promise<void> {
     if (this.config.lastSync.get() === 0) return;
     const lastSyncDate = moment(this.config.lastSync.get());
     const today = moment();
@@ -418,23 +751,42 @@ export class SyncRunPull {
     for (const deviceNode of deviceNodes) {
       const endpoints = await deviceNode.getChildren('hasBmsEndpoint');
       for (const endpoint of endpoints) {
-        SpinalGraphService._addNode(endpoint);
-        await this.nwService.setEndpointValue(endpoint.info.id.get(), 0);
+        const element = await endpoint.element.load();
+        element.currentValue.set(0);
+        //await this.nwService.setEndpointValue(endpoint.info.id.get(), 0);
       }
     }
     console.log('Endpoint values reset to 0 successfully');
+    console.log('Cleaning known daily occupants...');
+    await spinalOccupantService.deleteAllOccupants(
+      this.occupantContext.getName().get()
+    );
+  }
+
+  async initTicketNodes(): Promise<void> {
+    this.ticketContext = await this.getTicketContext();
+    this.ticketProcess = await this.getTicketProcess();
   }
 
   async init(): Promise<void> {
     console.log('Initiating SyncRunPull');
     try {
+      await this.initEquipmentGroup(); // for tickets and bmsdevices link 
+      await this.initTicketNodes();
+      await this.initBuildingNode();
+      this.occupantContext = await spinalOccupantService.createOrGetContext(process.env.OCCUPANT_CONTEXT_NAME);
+      this.organizationContext = await spinalOrganizationService.createOrGetContext(process.env.ORGANIZATION_CONTEXT_NAME);
       await this.initNetworkNodes();
-      await this.resetEndpointValuesIfNeeded();
+      await this.resetIfNeeded();
       await this.doNetworkJob();
+      await this.calculateOccupants();
+      await this.pullAndUpdateAlarms();
+      
+      console.log('SyncRunPull initiated successfully');
 
       this.config.lastSync.set(Date.now());
     } catch (e) {
-      console.error(e);
+      axios.isAxiosError(e) ? console.error('[AxiosError]') : console.error(e);
     }
   }
 
@@ -446,11 +798,15 @@ export class SyncRunPull {
       if (!this.running) break;
       const before = Date.now();
       try {
-        await this.resetEndpointValuesIfNeeded();
+        await this.resetIfNeeded();
         await this.doNetworkJob();
+        await this.calculateOccupants();
+        await this.pullAndUpdateAlarms();
         this.config.lastSync.set(Date.now());
       } catch (e) {
-        axios.isAxiosError(e) ? console.error('[AxiosError]') : console.error('erreur non axios');
+        axios.isAxiosError(e)
+          ? console.error('[AxiosError]')
+          : console.error(e);
         await this.waitFct(1000 * 60);
       } finally {
         const delta = Date.now() - before;
