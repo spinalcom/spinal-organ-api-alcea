@@ -704,7 +704,8 @@ export class SyncRunPull {
           log.parsedDateTime1 &&
           log.parsedDateTime1.getTime() > lastSyncTime &&
           log.AlarmCodeMessage !== "Changement d'état normal" &&
-          log.AlarmCodeMessage !== "Changement d'état alarme"
+          log.AlarmCodeMessage !== "Changement d'état alarme" &&
+          log.AlarmCodeMessage !== "Porte fermée"
         );
       })
       .reverse();
@@ -723,7 +724,7 @@ export class SyncRunPull {
       }
 
       const ticketInfo = {
-        name : logAlarm.AlarmCodeMessage,
+        name : `${code}-${logAlarm.AlarmCodeMessage}`,
         date: logAlarm.parsedDateTime1,
         clientName: 'alcea',
         AlarmID: logAlarm.AlarmID,
@@ -763,15 +764,20 @@ export class SyncRunPull {
     // 1 :
     const deviceNumbersOPERA = process.env.LBE_OPERA.split(',');
     const deviceNumbersLLG = process.env.LBE_LLG.split(',');
-    const deviceNumbers4S = process.env.LBE_4S.split(',');
+    // const deviceNumbers4S = process.env.LBE_4S.split(',');
     console.log(
       'Device Numbers for OPERA:',
       deviceNumbersOPERA,
       'LLG:',
       deviceNumbersLLG,
-      '4S:',
-      deviceNumbers4S
+      // '4S:',
+      // deviceNumbers4S
     );
+
+    const deviceNamesIn4S = process.env.IN_4S.split(',');
+    const deviceNamesOut4S = process.env.OUT_4S.split(',');
+
+
     const deviceNodes: SpinalNode<any>[] =
       await this.virtualNetworkContext.getChildren('hasBmsDevice');
 
@@ -816,11 +822,18 @@ export class SyncRunPull {
         );
         totalOccupantsLLG += inValue - outValue;
       }
-      else if( deviceNumbers4S.some((deviceNumber) => deviceName.includes(deviceNumber))){
+      else if( deviceNamesIn4S.some((deviceNameIn) => deviceName == deviceNameIn )){
         console.log(
-          `Device 4S: ${deviceName}, In: ${inValue}, Out: ${outValue}, Difference: ${inValue - outValue}`
+          `Device 4S IN: ${deviceName}, In: ${inValue}`
         );
-        totalOccupants4S += inValue - outValue;
+        totalOccupants4S += inValue;
+      }
+
+      else if( deviceNamesOut4S.some((deviceNameOut) => deviceName == deviceNameOut )){
+        console.log(
+          `Device 4S OUT: ${deviceName}, In: ${inValue}`
+        );
+        totalOccupants4S +=  -inValue; // If it's an Out device, we subtract the In value from the Out value
       }
     }
 
