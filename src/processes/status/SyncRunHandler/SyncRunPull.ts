@@ -909,11 +909,31 @@ export class SyncRunPull {
     await spinalOccupantService.deleteAllOccupants(
       this.occupantContext.getName().get()
     );
+    await this.deleteTicketNodes();
+
+
   }
 
   async initTicketNodes(): Promise<void> {
     this.ticketContext = await this.getTicketContext();
     this.ticketProcess = await this.getTicketProcess();
+  }
+
+  async deleteTicketNodes(): Promise<void> {
+    const steps = await this.ticketProcess.getChildren(
+      'SpinalSystemServiceTicketHasStep'
+    );
+    
+    const step = steps.find((step) => step.getName().get() === 'Raised');
+    if (!step) {
+      console.error('Step Raised not found ( trying to delete tickets)');
+    }
+
+    const tickets = await step.getChildren('SpinalSystemServiceTicketHasTicket');
+    for (const ticket of tickets ) {
+      await ticket.removeFromGraph();
+      console.log('Ticket deleted:', ticket.getName().get());
+    }
   }
 
   async init(): Promise<void> {
